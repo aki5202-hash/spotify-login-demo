@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <title>Spotify 自動登入 + 歌單試聽系統</title>
+  <title>Spotify 自動登入 + 30 秒試聽（含 YouTube fallback）</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     body { background:#0b1020; color:white; font-family:Arial; padding:20px; }
@@ -12,10 +12,13 @@
     .track { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid #333; }
     img { width:60px; height:60px; border-radius:6px; }
   </style>
+
+  <!-- YouTube API -->
+  <script src="https://www.youtube.com/iframe_api"></script>
 </head>
 
 <body>
-<h1>Spotify 自動登入 Demo（PKCE Flow）</h1>
+<h1>Spotify 自動登入（含 YouTube fallback 30 秒試聽）</h1>
 
 <div class="card">
   <button id="loginBtn">登入 Spotify</button>
@@ -39,6 +42,9 @@
   <div id="myList"></div>
 </div>
 
+<!-- 隱藏 YouTube 播放器 -->
+<div id="yt-player" style="width:0;height:0;overflow:hidden;"></div>
+
 <script>
 /* -----------------------------
   PKCE Helper
@@ -53,9 +59,7 @@ async function sha256(plain) {
 function base64urlencode(a) {
   let str = "";
   const bytes = new Uint8Array(a);
-  for (let i = 0; i < bytes.byteLength; i++) {
-    str += String.fromCharCode(bytes[i]);
-  }
+  bytes.forEach(b => str += String.fromCharCode(b));
   return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
@@ -68,16 +72,27 @@ async function generateCodeChallenge(codeVerifier) {
   Spotify Auth Config
 ----------------------------- */
 
-// *** YOUR CLIENT ID 已放入 ***
+// ★★★ 已替換你的 Client ID
 const clientId = "aec8a9bf8f32434490bb473786779b9b";
-
-// 必須與 Spotify Developer 的 Redirect URI 相同
 const redirectUri = window.location.origin;
 
 let accessToken = null;
+let ytPlayer = null;
 
 /* -----------------------------
-  登入 Spotify（PKCE 流程）
+  YouTube Player Load
+----------------------------- */
+function onYouTubeIframeAPIReady() {
+  ytPlayer = new YT.Player("yt-player", {
+    height: "0",
+    width: "0",
+    videoId: "",
+    events: {}
+  });
+}
+
+/* -----------------------------
+  Spotify Login (PKCE)
 ----------------------------- */
 
 async function login() {
@@ -120,7 +135,6 @@ async function handleRedirect() {
   });
 
   const data = await res.json();
-
   accessToken = data.access_token;
 
   document.getElementById("loginStatus").textContent = "已登入 Spotify ✔";
@@ -130,7 +144,7 @@ handleRedirect();
 document.getElementById("loginBtn").onclick = login;
 
 /* -----------------------------
-  解析 Playlist ID
+  Playlist ID extractor
 ----------------------------- */
 function extractPlaylistId(url) {
   try {
@@ -143,7 +157,36 @@ function extractPlaylistId(url) {
 }
 
 /* -----------------------------
-  讀取歌單
+  YouTube Search (No API Key)
+----------------------------- */
+async function searchYouTube(song, artist) {
+  const query = encodeURIComponent(`${song} ${artist} audio`);
+  const html = await fetch(`https://cors.isomorphic-git.org/https://www.youtube.com/results?search_query=${query}`).then(r => r.text());
+
+  // 抓出第一個 videoId
+  const match = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+  if (match) return match[1];
+
+  return null;
+}
+
+/* -----------------------------
+  Play YouTube for 30 seconds
+----------------------------- */
+function playYouTube30s(videoId) {
+  ytPlayer.loadVideoById(videoId, 0, "tiny");
+
+  // 播放
+  ytPlayer.playVideo();
+
+  // 30 秒後停止
+  setTimeout(() => {
+    ytPlayer.pauseVideo();
+  }, 30000);
+}
+
+/* -----------------------------
+  Load Playlist
 ----------------------------- */
 
 document.getElementById("loadPlaylistBtn").onclick = async () => {
@@ -167,41 +210,52 @@ document.getElementById("loadPlaylistBtn").onclick = async () => {
 
   data.items.forEach(item => {
     const t = item.track;
+    const name = t.name;
+    const artists = t.artists.map(a => a.name).join(", ");
+
     const div = document.createElement("div");
     div.className = "track";
 
     div.innerHTML = `
       <img src="${t.album.images[2]?.url}">
       <div style="flex:1">
-        <div><b>${t.name}</b></div>
-        <div style="font-size:12px;color:#aaa">
-          ${t.artists.map(a=>a.name).join(", ")}
-        </div>
+        <div><b>${name}</b></div>
+        <div style="font-size:12px;color:#aaa">${artists}</div>
       </div>
       <button class="previewBtn">試聽</button>
       <button class="addBtn">加入</button>
     `;
 
-    // 試聽
-    div.querySelector(".previewBtn").onclick = () => {
-      if (!t.preview_url) {
-        alert("此歌曲沒有試聽片段");
-        return;
+    // ★★★ 試聽按鈕（Spotify→YouTube fallback）
+    div.querySelector(".previewBtn").onclick = async () => {
+      if (t.preview_url) {
+        // 播 Spotify 的 preview
+        const audio = new Audio(t.preview_url);
+        audio.play();
+        setTimeout(() => audio.pause(), 30000);
+      } else {
+        // YouTube fallback
+        const videoId = await searchYouTube(name, artists);
+        if (!videoId) {
+          alert("找不到 YouTube 試聽來源");
+          return;
+        }
+        playYouTube30s(videoId);
       }
-      new Audio(t.preview_url).play();
     };
 
     // 加入清單
     div.querySelector(".addBtn").onclick = () => {
       const my = document.getElementById("myList");
       const item = document.createElement("div");
-      item.textContent = `${t.name} - ${t.artists.map(a=>a.name).join(", ")}`;
+      item.textContent = `${name} - ${artists}`;
       my.appendChild(item);
     };
 
     container.appendChild(div);
   });
 };
+
 </script>
 
 </body>

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <title>Spotify 自動登入 + 歌單試聽系統</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body { background:#0b1020; color:white; font-family:Arial; padding:20px; }
+    input,button { padding:10px; border-radius:6px; }
+    button { cursor:pointer; font-weight:bold; }
+    .card { background:#141927; padding:16px; border-radius:12px; margin-bottom:20px; }
+    .track { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid #333; }
+    img { width:60px; height:60px; border-radius:6px; }
+  </style>
+</head>
+
+<body>
+<h1>Spotify 自動登入 Demo（PKCE Flow）</h1>
+
+<div class="card">
+  <button id="loginBtn">登入 Spotify</button>
+  <span id="loginStatus"></span>
+</div>
+
+<div class="card">
+  <h2>匯入 Spotify 歌單</h2>
+  <input type="text" id="playlistUrl" placeholder="輸入 Spotify 歌單網址..." style="width:100%;">
+  <br><br>
+  <button id="loadPlaylistBtn">載入歌單</button>
+</div>
+
+<div class="card">
+  <h2>歌單曲目</h2>
+  <div id="tracks"></div>
+</div>
+
+<div class="card">
+  <h2>我的清單</h2>
+  <div id="myList"></div>
+</div>
+
+<script>
+/* -----------------------------
+  PKCE Helper
+----------------------------- */
+
+async function sha256(plain) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  return window.crypto.subtle.digest("SHA-256", data);
+}
+
+function base64urlencode(a) {
+  let str = "";
+  const bytes = new Uint8Array(a);
+  for (let i = 0; i < bytes.byteLength; i++) {
+    str += String.fromCharCode(bytes[i]);
+  }
+  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function generateCodeChallenge(codeVerifier) {
+  const digest = await sha256(codeVerifier);
+  return base64urlencode(digest);
+}
+
+/* -----------------------------
+  Spotify Auth Config
+----------------------------- */
+
+// *** YOUR CLIENT ID 已放入 ***
+const clientId = "aec8a9bf8f32434490bb473786779b9b";
+
+// 必須與 Spotify Developer 的 Redirect URI 相同
+const redirectUri = window.location.origin;
+
+let accessToken = null;
+
+/* -----------------------------
+  登入 Spotify（PKCE 流程）
+----------------------------- */
+
+async function login() {
+  const codeVerifier = base64urlencode(crypto.getRandomValues(new Uint8Array(32)));
+  const codeChallenge = await generateCodeChallenge(codeVerifier);
+
+  localStorage.setItem("code_verifier", codeVerifier);
+
+  const args = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    scope: "playlist-read-private playlist-read-collaborative user-read-private",
+    code_challenge_method: "S256",
+    code_challenge: codeChallenge,
+    redirect_uri: redirectUri,
+  });
+
+  window.location = "https://accounts.spotify.com/authorize?" + args.toString();
+}
+
+async function handleRedirect() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code");
+  if (!code) return;
+
+  const codeVerifier = localStorage.getItem("code_verifier");
+
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: redirectUri,
+    client_id: clientId,
+    code_verifier: codeVerifier,
+  });
+
+  const res = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body
+  });
+
+  const data = await res.json();
+
+  accessToken = data.access_token;
+
+  document.getElementById("loginStatus").textContent = "已登入 Spotify ✔";
+}
+
+handleRedirect();
+document.getElementById("loginBtn").onclick = login;
+
+/* -----------------------------
+  解析 Playlist ID
+----------------------------- */
+function extractPlaylistId(url) {
+  try {
+    const u = new URL(url);
+    const parts = u.pathname.split("/");
+    return parts[parts.indexOf("playlist") + 1];
+  } catch {
+    return null;
+  }
+}
+
+/* -----------------------------
+  讀取歌單
+----------------------------- */
+
+document.getElementById("loadPlaylistBtn").onclick = async () => {
+  if (!accessToken) {
+    alert("請先登入 Spotify");
+    return;
+  }
+
+  const url = document.getElementById("playlistUrl").value;
+  const playlistId = extractPlaylistId(url);
+
+  const res = await fetch(
+    `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
+    { headers: { Authorization: "Bearer " + accessToken } }
+  );
+
+  const data = await res.json();
+
+  const container = document.getElementById("tracks");
+  container.innerHTML = "";
+
+  data.items.forEach(item => {
+    const t = item.track;
+    const div = document.createElement("div");
+    div.className = "track";
+
+    div.innerHTML = `
+      <img src="${t.album.images[2]?.url}">
+      <div style="flex:1">
+        <div><b>${t.name}</b></div>
+        <div style="font-size:12px;color:#aaa">
+          ${t.artists.map(a=>a.name).join(", ")}
+        </div>
+      </div>
+      <button class="previewBtn">試聽</button>
+      <button class="addBtn">加入</button>
+    `;
+
+    // 試聽
+    div.querySelector(".previewBtn").onclick = () => {
+      if (!t.preview_url) {
+        alert("此歌曲沒有試聽片段");
+        return;
+      }
+      new Audio(t.preview_url).play();
+    };
+
+    // 加入清單
+    div.querySelector(".addBtn").onclick = () => {
+      const my = document.getElementById("myList");
+      const item = document.createElement("div");
+      item.textContent = `${t.name} - ${t.artists.map(a=>a.name).join(", ")}`;
+      my.appendChild(item);
+    };
+
+    container.appendChild(div);
+  });
+};
+</script>
+
+</body>
+</html>

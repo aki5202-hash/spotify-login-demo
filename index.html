@@ -2,12 +2,12 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8"/>
-  <title>Spotify Auto-Preview Player</title>
+  <title>Spotify Auto Preview Player</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <style>
     body { background:#0b1020; color:white; font-family:Arial; padding:20px; }
     input,button { padding:10px; border-radius:6px; }
-    button { cursor:pointer; font-weight:bold; }
+    button { cursor:pointer; font-weight:bold; border:none; }
     .card { background:#141927; padding:16px; border-radius:12px; margin-bottom:20px; }
     .track { display:flex; gap:10px; align-items:center; padding:10px 0; border-bottom:1px solid #333; }
     img { width:60px; height:60px; border-radius:6px; }
@@ -25,17 +25,17 @@
 
 <div class="card">
   <h2>匯入 Spotify 歌單</h2>
-  <input type="text" id="playlistUrl" placeholder="貼上 Spotify 歌單網址（含 ?si 也可）" style="width:100%;">
+  <input id="playlistUrl" placeholder="貼上 Spotify 歌單網址" style="width:100%;">
   <br><br>
   <button id="loadPlaylistBtn">載入歌單</button>
 </div>
 
 <div class="card">
   <h2>歌單曲目</h2>
-  <button id="playAllBtn" style="margin-bottom:10px; background:#1db954; color:white;">▶ 播放全部（從第一首）</button>
+  <button id="playAllBtn" style="margin-bottom:15px; background:#1db954; color:white;">▶ 播放全部（從第一首）</button>
   <div id="tracks"></div>
 
-  <h3 style="margin-top:20px;">試聽播放器（Spotify Preview）</h3>
+  <h3 style="margin-top:25px;">試聽播放器（Spotify Preview）</h3>
   <iframe id="sp-player"
     src=""
     frameborder="0"
@@ -46,24 +46,23 @@
 
 <script>
 /* ---------------------------
-   Spotify PKCE
+   Spotify PKCE Setup
 ---------------------------- */
 async function sha256(plain) {
   const encoder = new TextEncoder();
   const data = encoder.encode(plain);
   return crypto.subtle.digest("SHA-256", data);
 }
-function base64urlencode(array) {
-  return btoa(String.fromCharCode(...new Uint8Array(array)))
+function base64urlencode(arr) {
+  return btoa(String.fromCharCode(...new Uint8Array(arr)))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 async function generateCodeChallenge(v) {
-  const hashed = await sha256(v);
-  return base64urlencode(hashed);
+  return base64urlencode(await sha256(v));
 }
 
 const clientId = "aec8a9bf8f32434490bb473786779b9b";
-const redirectUri = window.location.origin;
+const redirectUri = "https://spectacular-gumdrop-a388a8.netlify.app";
 
 let accessToken = null;
 let currentTracks = [];
@@ -75,8 +74,9 @@ let autoTimer = null;
 ---------------------------- */
 async function login() {
   const verifier = base64urlencode(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = await generateCodeChallenge(verifier);
   localStorage.setItem("code_verifier", verifier);
+
+  const challenge = await generateCodeChallenge(verifier);
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -92,7 +92,7 @@ async function login() {
 document.getElementById("loginBtn").onclick = login;
 
 /* ---------------------------
-   Handle Redirect
+   Redirect Handler
 ---------------------------- */
 async function handleRedirect() {
   const params = new URLSearchParams(window.location.search);
@@ -116,11 +116,18 @@ async function handleRedirect() {
   });
 
   const data = await res.json();
+
+  if (!data.access_token) {
+    alert("登入到期，請重新登入");
+    window.location = redirectUri;
+    return;
+  }
+
   accessToken = data.access_token;
   document.getElementById("loginStatus").textContent = "已登入 Spotify ✔";
 
-  /* 🔥 修正：清掉 URL 上的 ?code= 避免阻擋載入流程 */
-  window.history.replaceState({}, document.title, "/");
+  /* 🔥 絕對清除 URL 中的 ?code= 避免卡死 */
+  window.history.replaceState({}, document.title, window.location.pathname);
 }
 handleRedirect();
 
@@ -128,7 +135,7 @@ handleRedirect();
    Extract Playlist ID
 ---------------------------- */
 function extractPlaylistId(url) {
-  return url.split("?")[0].split("/").pop();
+  return url.split("?")[0].split("/").pop().trim();
 }
 
 /* ---------------------------
@@ -137,14 +144,21 @@ function extractPlaylistId(url) {
 document.getElementById("loadPlaylistBtn").onclick = async () => {
   if (!accessToken) return alert("請先登入 Spotify");
 
-  const playlistUrl = document.getElementById("playlistUrl").value.trim();
-  const playlistId = extractPlaylistId(playlistUrl);
+  const playlistId = extractPlaylistId(
+    document.getElementById("playlistUrl").value.trim()
+  );
 
   const res = await fetch(
-    `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=200`,
-    { headers: { Authorization: "Bearer " + accessToken } }
+    `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=150`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
   );
+
   const data = await res.json();
+
+  if (!data.items) {
+    alert("載入歌單失敗，請檢查網址是否正確");
+    return;
+  }
 
   const container = document.getElementById("tracks");
   container.innerHTML = "";
@@ -158,6 +172,7 @@ document.getElementById("loadPlaylistBtn").onclick = async () => {
 
     const div = document.createElement("div");
     div.className = "track";
+
     div.innerHTML = `
       <img src="${t.album.images[2]?.url || t.album.images[0]?.url}">
       <div style="flex:1;">
@@ -166,12 +181,13 @@ document.getElementById("loadPlaylistBtn").onclick = async () => {
       </div>
       <button onclick="playTrack(${idx})">播放</button>
     `;
+
     container.appendChild(div);
   });
 };
 
 /* ---------------------------
-   Play Track + Auto Next
+   播放單曲 ＋ Auto Next
 ---------------------------- */
 function playTrack(i) {
   currentIndex = i;
@@ -181,21 +197,20 @@ function playTrack(i) {
   player.src = `https://open.spotify.com/embed/track/${trackId}`;
 
   if (autoTimer) clearTimeout(autoTimer);
-
   autoTimer = setTimeout(() => nextTrack(), 30000);
 }
 
 function nextTrack() {
   currentIndex++;
   if (currentIndex >= currentTracks.length) {
-    alert("全部播放完畢！");
+    alert("已播完全部歌曲！");
     return;
   }
   playTrack(currentIndex);
 }
 
 /* ---------------------------
-   🔥 播放全部（從第一首開始）
+   ▶ 播放全部（從第一首）
 ---------------------------- */
 document.getElementById("playAllBtn").onclick = () => {
   if (!currentTracks.length) return alert("請先載入歌單！");

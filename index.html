@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <title>Spotify 歌單 + Web Player Preview（30 秒）</title>
+  <title>Spotify Playlist Preview Auto-Play</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     body { background:#0b1020; color:white; font-family:Arial; padding:20px; }
@@ -18,11 +18,11 @@
 </head>
 
 <body>
-<h1>Spotify 歌單 + Spotify Web Player 預覽</h1>
+<h1>Spotify Web Player Preview + Auto Play</h1>
 
 <div class="card">
   <button id="loginBtn">登入 Spotify</button>
-  <span id="loginStatus" style="margin-left:6px;"></span>
+  <span id="loginStatus"></span>
 </div>
 
 <div class="card">
@@ -36,7 +36,7 @@
   <h2>歌單曲目</h2>
   <div id="tracks"></div>
 
-  <h3 style="margin-top:20px;">試聽播放器 (Spotify 官方 Preview)</h3>
+  <h3>播放器（Spotify 30 秒 Preview）</h3>
   <iframe id="sp-player"
     src=""
     frameborder="0"
@@ -46,15 +46,7 @@
   </iframe>
 </div>
 
-<div class="card">
-  <h2>我的清單</h2>
-  <div id="myList"></div>
-</div>
-
 <script>
-/* -----------------------------
-   PKCE Helper
------------------------------ */
 async function sha256(plain) {
   const encoder = new TextEncoder();
   const data = encoder.encode(plain);
@@ -73,17 +65,14 @@ async function generateCodeChallenge(secret) {
   return base64urlencode(digest);
 }
 
-/* -----------------------------
-   Spotify Auth
------------------------------ */
 const clientId = "aec8a9bf8f32434490bb473786779b9b";
 const redirectUri = window.location.origin;
 
 let accessToken = null;
+let currentIndex = 0;
+let currentTracks = [];
+let autoTimer = null;
 
-/* -----------------------------
-   Login
------------------------------ */
 async function login() {
   const verifier = base64urlencode(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = await generateCodeChallenge(verifier);
@@ -96,7 +85,7 @@ async function login() {
     code_challenge_method: "S256",
     code_challenge: challenge,
     redirect_uri: redirectUri,
-    scope: "playlist-read-private playlist-read-collaborative user-read-email"
+    scope: "playlist-read-private playlist-read-collaborative"
   });
 
   window.location = "https://accounts.spotify.com/authorize?" + params.toString();
@@ -127,32 +116,23 @@ async function handleRedirect() {
 
   const data = await res.json();
   accessToken = data.access_token;
-
   document.getElementById("loginStatus").textContent = "已登入 Spotify ✔";
 }
 
 handleRedirect();
 
-/* -----------------------------
-   Extract Playlist ID (fix ?si=)
------------------------------ */
 function extractPlaylistId(url) {
-  const clean = url.split("?")[0];
-  const parts = clean.split("/");
-  return parts[parts.length - 1];
+  return url.split("?")[0].split("/").pop();
 }
 
-/* -----------------------------
-   Load Playlist
------------------------------ */
 document.getElementById("loadPlaylistBtn").onclick = async () => {
   if (!accessToken) {
     alert("請先登入 Spotify");
     return;
   }
 
-  const rawUrl = document.getElementById("playlistUrl").value.trim();
-  const playlistId = extractPlaylistId(rawUrl);
+  const playlistUrl = document.getElementById("playlistUrl").value.trim();
+  const playlistId = extractPlaylistId(playlistUrl);
 
   const res = await fetch(
     `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`,
@@ -163,51 +143,49 @@ document.getElementById("loadPlaylistBtn").onclick = async () => {
   const container = document.getElementById("tracks");
   container.innerHTML = "";
 
-  data.items.forEach(item => {
+  currentTracks = data.items.map(i => i.track.id).filter(Boolean);
+  currentIndex = 0;
+
+  data.items.forEach((item, idx) => {
     const t = item.track;
-    if (!t) return;
-
-    const name = t.name;
-    const artists = t.artists.map(a => a.name).join(", ");
-
     const div = document.createElement("div");
     div.className = "track";
 
-    const img = document.createElement("img");
-    img.src = t.album.images?.[2]?.url || t.album.images?.[0]?.url || "";
-
-    const info = document.createElement("div");
-    info.style.flex = "1";
-    info.innerHTML = `
-      <div class="title">${name}</div>
-      <div class="artist">${artists}</div>
+    div.innerHTML = `
+      <img src="${t.album.images[2]?.url || t.album.images[0]?.url}">
+      <div style="flex:1;">
+        <div class="title">${t.name}</div>
+        <div class="artist">${t.artists.map(a=>a.name).join(", ")}</div>
+      </div>
+      <button onclick="playTrack(${idx})">播放</button>
     `;
-
-    const previewBtn = document.createElement("button");
-    previewBtn.textContent = "試聽（Spotify Preview）";
-    previewBtn.onclick = () => {
-      document.getElementById("sp-player").src =
-        `https://open.spotify.com/embed/track/${t.id}`;
-    };
-
-    const addBtn = document.createElement("button");
-    addBtn.textContent = "加入";
-    addBtn.style.marginLeft = "8px";
-    addBtn.onclick = () => {
-      const my = document.getElementById("myList");
-      const item = document.createElement("div");
-      item.textContent = `${name} - ${artists}`;
-      my.appendChild(item);
-    };
-
-    div.appendChild(img);
-    div.appendChild(info);
-    div.appendChild(previewBtn);
-    div.appendChild(addBtn);
-
     container.appendChild(div);
   });
 };
+
+function playTrack(i) {
+  currentIndex = i;
+
+  const player = document.getElementById("sp-player");
+  const trackId = currentTracks[currentIndex];
+
+  player.src = `https://open.spotify.com/embed/track/${trackId}`;
+
+  if (autoTimer) clearTimeout(autoTimer);
+
+  autoTimer = setTimeout(() => {
+    nextTrack();
+  }, 30000);
+}
+
+function nextTrack() {
+  currentIndex++;
+  if (currentIndex >= currentTracks.length) {
+    alert("播放完畢！");
+    return;
+  }
+  playTrack(currentIndex);
+}
 </script>
 
 </body>

@@ -2,11 +2,11 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <title>Spotify Playlist Preview Auto-Play</title>
+  <title>Spotify Playlist Auto-Play</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     body { background:#0b1020; color:white; font-family:Arial; padding:20px; }
-    input,button { padding:10px; border-radius:6px; }
+    input,button { padding:10px; border-radius:8px; }
     button { cursor:pointer; font-weight:bold; border:none; }
     .card { background:#141927; padding:16px; border-radius:12px; margin-bottom:20px; }
     .track { padding:10px 0; border-bottom:1px solid #333; }
@@ -14,14 +14,13 @@
     img { width:60px; height:60px; border-radius:6px; object-fit:cover; }
     .title { font-weight:bold; }
     .artist { font-size:12px; color:#aaa; }
-    .player-box { margin-top:10px; }
-    iframe { width:100%; height:152px; border-radius:12px; margin-top:10px; }
+    iframe { width:100%; height:160px; border-radius:12px; margin-top:10px; }
   </style>
 </head>
 
 <body>
 
-<h1>Spotify Playlist Player</h1>
+<h1>Spotify Playlist Auto-Play</h1>
 
 <div class="card">
   <button id="loginBtn">登入 Spotify</button>
@@ -37,162 +36,135 @@
 
 <div class="card">
   <h2>歌單曲目</h2>
-
-  <!-- 播放全部 -->
-  <button id="playAllBtn" style="margin-bottom:15px; background:#1db954;">▶ 播放全部（從第一首）</button>
-
+  <button id="playAllBtn" style="margin-bottom:15px; background:#1db954;">▶ 播放全部（從第一首開始）</button>
   <div id="tracks"></div>
 </div>
 
 <script>
-// ========== PKCE Helpers ==========
-async function sha256(plain) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(plain);
-  return crypto.subtle.digest("SHA-256", data);
-}
+// ===== Spotify Auth (PKCE) =====
+async function sha256(a){return crypto.subtle.digest("SHA-256",(new TextEncoder).encode(a))}
+function d(a){return btoa(String.fromCharCode.apply(null,new Uint8Array(a))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")}
+async function f(a){return d(await sha256(a))}
 
-function base64urlencode(a) {
-  return btoa(String.fromCharCode.apply(null, new Uint8Array(a)))
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
+const clientId="aec8a9bf8f32434490bb473786779b9b";
+const redirectUri=window.location.origin;
 
-async function generateCodeChallenge(v) {
-  const d = await sha256(v);
-  return base64urlencode(d);
-}
+let accessToken=null;
+let trackList=[];
+let currentIndex=0;
+let autoTimer=null;
 
-// ========== Spotify Auth ==========
-const clientId = "aec8a9bf8f32434490bb473786779b9b";
-const redirectUri = window.location.origin;
+document.getElementById("loginBtn").onclick=async()=>{
+  const v=d(crypto.getRandomValues(new Uint8Array(32)));
+  const c=await f(v);
+  localStorage.setItem("cv",v);
 
-let accessToken = null;
-let currentIndex = 0;
-let trackList = [];
-let autoTimer = null;
+  const q=new URLSearchParams({
+    response_type:"code",
+    client_id:clientId,
+    code_challenge_method:"S256",
+    code_challenge:c,
+    redirect_uri:redirectUri,
+    scope:"playlist-read-private playlist-read-collaborative"
+  });
+  location.href="https://accounts.spotify.com/authorize?"+q.toString();
+};
 
-async function login() {
-  const verifier = base64urlencode(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = await generateCodeChallenge(verifier);
+(async()=>{
+  const code=new URLSearchParams(location.search).get("code");
+  if(!code)return;
 
-  localStorage.setItem("code_verifier", verifier);
+  const v=localStorage.getItem("cv");
 
-  const params = new URLSearchParams({
-    response_type: "code",
-    client_id: clientId,
-    code_challenge_method: "S256",
-    code_challenge: challenge,
-    redirect_uri: redirectUri,
-    scope: "playlist-read-private playlist-read-collaborative"
+  const res=await fetch("https://accounts.spotify.com/api/token",{
+    method:"POST",
+    headers:{ "Content-Type":"application/x-www-form-urlencoded" },
+    body:new URLSearchParams({
+      grant_type:"authorization_code",
+      code:code,
+      redirect_uri:redirectUri,
+      client_id:clientId,
+      code_verifier:v
+    })
   });
 
-  location.href = "https://accounts.spotify.com/authorize?" + params.toString();
-}
+  const data=await res.json();
+  accessToken=data.access_token;
+  document.getElementById("loginStatus").textContent="已登入 ✔";
 
-document.getElementById("loginBtn").onclick = login;
+  window.history.replaceState({},document.title,"/");
+})();
 
-async function handleRedirect() {
-  const code = new URLSearchParams(location.search).get("code");
-  if (!code) return;
-
-  const verifier = localStorage.getItem("code_verifier");
-
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code: code,
-    redirect_uri: redirectUri,
-    client_id: clientId,
-    code_verifier: verifier
-  });
-
-  const res = await fetch("https://accounts.spotify.com/api/token", {
-    method: "POST",
-    headers: {"Content-Type":"application/x-www-form-urlencoded"},
-    body
-  });
-
-  const data = await res.json();
-  accessToken = data.access_token;
-
-  document.getElementById("loginStatus").textContent = "已登入 ✔";
-
-  // 清掉 URL ?code= 避免卡住下一次載入流程
-  window.history.replaceState({}, "", "/");
-}
-
-handleRedirect();
-
-// ========== Playlist Loader ==========
-function extractPlaylistId(url) {
+// ===== Playlist Loader =====
+function extractId(url){
   return url.split("?")[0].split("/").pop();
 }
 
-document.getElementById("loadPlaylistBtn").onclick = async () => {
-  if (!accessToken) return alert("請先登入 Spotify");
+document.getElementById("loadPlaylistBtn").onclick=async()=>{
+  if(!accessToken)return alert("請先登入");
 
-  const playlistId = extractPlaylistId(document.getElementById("playlistUrl").value.trim());
+  const playlistId=extractId(document.getElementById("playlistUrl").value.trim());
 
-  const res = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`, {
-    headers: {Authorization: "Bearer " + accessToken}
+  const res=await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`,{
+    headers:{Authorization:"Bearer "+accessToken}
   });
 
-  const data = await res.json();
+  const data=await res.json();
+  const container=document.getElementById("tracks");
+  container.innerHTML="";
 
-  const container = document.getElementById("tracks");
-  container.innerHTML = "";
+  trackList=data.items.map(i=>i.track).filter(Boolean);
+  currentIndex=0;
 
-  trackList = data.items.map(i => i.track).filter(Boolean);
+  trackList.forEach((t,i)=>{
+    const div=document.createElement("div");
+    div.className="track";
 
-  trackList.forEach((track, i) => {
-    const div = document.createElement("div");
-    div.className = "track";
-
-    div.innerHTML = `
+    div.innerHTML=`
       <div class="track-row">
-        <img src="${track.album.images[2]?.url || track.album.images[0]?.url}">
-        <div style="flex:1;">
-          <div class="title">${track.name}</div>
-          <div class="artist">${track.artists.map(a => a.name).join(", ")}</div>
+        <img src="${t.album.images[1]?.url || t.album.images[0]?.url}">
+        <div style="flex:1">
+          <div class="title">${t.name}</div>
+          <div class="artist">${t.artists.map(a=>a.name).join(", ")}</div>
         </div>
-        <button onclick="playTrack(${i})">播放</button>
+        <button onclick="play(${i})">播放</button>
       </div>
-      <div id="player-${i}" class="player-box"></div>
+      <div id="box-${i}"></div>
     `;
-
     container.appendChild(div);
   });
 };
 
-// ========== Player Logic: Auto Play + Dynamic Position ==========
-function playTrack(i) {
-  currentIndex = i;
+// ===== Player Logic =====
+function play(i){
+  currentIndex=i;
 
-  // 清除所有播放器
-  document.querySelectorAll(".player-box").forEach(p => p.innerHTML = "");
+  document.querySelectorAll("[id^=box-]").forEach(b=>b.innerHTML="");
 
-  const box = document.getElementById(`player-${i}`);
-  const id = trackList[i].id;
+  const id=trackList[i].id;
+  const box=document.getElementById(`box-${i}`);
 
-  box.innerHTML = `
-    <iframe src="https://open.spotify.com/embed/track/${id}"
-      frameborder="0" allow="encrypted-media"></iframe>
+  box.innerHTML=`
+    <iframe
+      src="https://open.spotify.com/embed/track/${id}?autoplay=1"
+      allow="autoplay; encrypted-media">
+    </iframe>
   `;
 
-  if (autoTimer) clearTimeout(autoTimer);
-
-  // 自動播放下一首
-  autoTimer = setTimeout(() => {
-    nextTrack();
-  }, 30000);
+  if(autoTimer)clearTimeout(autoTimer);
+  autoTimer=setTimeout(()=>next(),30000);
 }
 
-function nextTrack() {
+function next(){
   currentIndex++;
-  if (currentIndex >= trackList.length) return alert("播放完畢！");
-  playTrack(currentIndex);
+  if(currentIndex>=trackList.length){
+    alert("播放完畢！");
+    return;
+  }
+  play(currentIndex);
 }
 
-document.getElementById("playAllBtn").onclick = () => playTrack(0);
+document.getElementById("playAllBtn").onclick=()=>play(0);
 </script>
 
 </body>

@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <title>Spotify + YouTube 試聽器（30 秒預覽）</title>
+  <title>Spotify 歌單 + Apple Music 試聽（30秒預覽）</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     body { background:#0b1020; color:white; font-family:Arial, system-ui; padding:20px; }
@@ -13,12 +13,13 @@
     img { width:60px; height:60px; border-radius:6px; object-fit:cover; background:#222; }
     .title { font-weight:bold; }
     .artist { font-size:12px; color:#aaa; }
-    #yt-wrapper { margin-top:10px; }
+    #am-wrapper { margin-top:10px; }
+    #am-player { border-radius:12px; width:100%; max-width:380px; height:175px; }
   </style>
 </head>
 
 <body>
-  <h1>Spotify 自動登入 + YouTube 30 秒試聽</h1>
+  <h1>Spotify 歌單 + Apple Music 試聽</h1>
 
   <div class="card">
     <button id="loginBtn">登入 Spotify</button>
@@ -36,20 +37,20 @@
     <h2>歌單曲目</h2>
     <div id="tracks"></div>
 
-    <!-- 顯示用的 YouTube 播放區（小視窗） -->
-    <div id="yt-wrapper">
-      <h3>目前試聽來源（YouTube）</h3>
+    <!-- Apple Music 播放區 -->
+    <div id="am-wrapper">
+      <h3>目前試聽（Apple Music 預覽）</h3>
+      <div id="am-current" style="font-size:13px;color:#ccc;margin-bottom:6px;"></div>
       <iframe
-        id="yt-player"
-        width="320"
-        height="180"
+        id="am-player"
         src=""
-        title="YouTube video player"
-        frameborder="0"
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-        referrerpolicy="strict-origin-when-cross-origin"
-        allowfullscreen>
+        allow="autoplay *; encrypted-media *;"
+        sandbox="allow-forms allow-popups allow-same-origin allow-scripts allow-top-navigation-by-user-activation"
+        frameborder="0">
       </iframe>
+      <div style="font-size:11px;color:#777;margin-top:4px;">
+        🔊 如果沒有自動播放，請在上面的 Apple Music 播放器按 ▶。
+      </div>
     </div>
   </div>
 
@@ -86,7 +87,7 @@ async function generateCodeChallenge(secret) {
    Spotify Auth Config
 ----------------------------- */
 
-// ★★★ 這裡已經是你的 Client ID
+// ★ 已放入你的 Client ID
 const clientId = "aec8a9bf8f32434490bb473786779b9b";
 const redirectUri = window.location.origin;
 
@@ -157,34 +158,69 @@ function extractPlaylistId(url) {
 }
 
 /* -----------------------------
-   YouTube 30 秒試聽（全部強制用 YouTube）
+   Apple Music 試聽（經 iTunes Search）
 ----------------------------- */
-const ytFrame = document.getElementById("yt-player");
-let previewTimer = null;
 
-function playYouTubePreview(song, artist) {
-  if (previewTimer) {
-    clearTimeout(previewTimer);
-    previewTimer = null;
+// 簡單清理歌名／歌手，避免括號等亂碼
+function cleanText(txt) {
+  if (!txt) return "";
+  return txt
+    .replace(/\s+/g, " ")
+    .replace(/\(.*?\)/g, "")
+    .replace(/\[.*?\]/g, "")
+    .trim();
+}
+
+async function playApplePreview(song, artist) {
+  const amPlayer = document.getElementById("am-player");
+  const amCurrent = document.getElementById("am-current");
+
+  const cleanSong = cleanText(song);
+  const cleanArtist = cleanText(artist);
+  const term = encodeURIComponent(`${cleanSong} ${cleanArtist}`);
+
+  amCurrent.textContent = `搜尋 Apple Music：${cleanSong} - ${cleanArtist} ...`;
+  amPlayer.src = ""; // 先清空，避免殘影
+
+  try {
+    const url = `https://itunes.apple.com/search?term=${term}&media=music&limit=1`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      amCurrent.textContent = "Apple Music 搜尋失敗（request 失敗）。";
+      return;
+    }
+
+    const data = await res.json();
+    if (!data.results || data.results.length === 0) {
+      amCurrent.textContent = "Apple Music 找不到這首歌。";
+      return;
+    }
+
+    const track = data.results[0];
+    const trackViewUrl = track.trackViewUrl || track.collectionViewUrl;
+
+    if (!trackViewUrl) {
+      amCurrent.textContent = "Apple Music 找不到可嵌入的連結。";
+      return;
+    }
+
+    // 把 music.apple.com 換成 embed.music.apple.com，做官方小播放器
+    const embedUrl = trackViewUrl.replace(
+      "https://music.apple.com",
+      "https://embed.music.apple.com"
+    );
+
+    amCurrent.textContent = `Apple Music 試聽：${track.trackName} - ${track.artistName}`;
+    amPlayer.src = embedUrl; // 使用官方 Apple Music embed，小播放器會出現
+
+  } catch (err) {
+    console.error(err);
+    amCurrent.textContent = "Apple Music 試聽時發生錯誤（請稍後再試）。";
   }
-
-  // 清理歌名／歌手字串，避免太多奇怪符號
-  const cleanSong = (song || "").replace(/\(.*?\)|\[.*?\]/g, "").trim();
-  const cleanArtist = (artist || "").replace(/\(.*?\)|\[.*?\]/g, "").trim();
-
-  const query = encodeURIComponent(`${cleanSong} ${cleanArtist} audio`);
-  const embedUrl = `https://www.youtube.com/embed?listType=search&list=${query}&autoplay=1`;
-
-  ytFrame.src = embedUrl;
-
-  // 30 秒後清空 src 停止播放
-  previewTimer = setTimeout(() => {
-    ytFrame.src = "";
-  }, 30000);
 }
 
 /* -----------------------------
-   Load Playlist
+   載入 Spotify 歌單
 ----------------------------- */
 document.getElementById("loadPlaylistBtn").onclick = async () => {
   if (!accessToken) {
@@ -239,10 +275,11 @@ document.getElementById("loadPlaylistBtn").onclick = async () => {
     `;
 
     const previewBtn = document.createElement("button");
-    previewBtn.textContent = "試聽（YouTube）";
+    previewBtn.textContent = "試聽（Apple Music）";
 
     previewBtn.onclick = () => {
-      playYouTubePreview(name, artists);
+      // 一律使用 Apple Music，而不是 Spotify/YouTube
+      playApplePreview(name, artists);
     };
 
     const addBtn = document.createElement("button");

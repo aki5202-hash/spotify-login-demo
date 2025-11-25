@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <title>Spotify 自動登入 + 30 秒試聽（含 YouTube fallback）</title>
+  <title>Spotify + YouTube fallback 試聽器（30 秒播放）</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     body { background:#0b1020; color:white; font-family:Arial; padding:20px; }
@@ -18,7 +18,7 @@
 </head>
 
 <body>
-<h1>Spotify 自動登入（含 YouTube fallback 30 秒試聽）</h1>
+<h1>Spotify 自動登入 + YouTube fallback 30 秒試聽</h1>
 
 <div class="card">
   <button id="loginBtn">登入 Spotify</button>
@@ -63,8 +63,8 @@ function base64urlencode(a) {
   return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function generateCodeChallenge(codeVerifier) {
-  const digest = await sha256(codeVerifier);
+async function generateCodeChallenge(secret) {
+  const digest = await sha256(secret);
   return base64urlencode(digest);
 }
 
@@ -80,19 +80,19 @@ let accessToken = null;
 let ytPlayer = null;
 
 /* -----------------------------
-  YouTube Player Load
+  YouTube Player Setup
 ----------------------------- */
 function onYouTubeIframeAPIReady() {
   ytPlayer = new YT.Player("yt-player", {
     height: "0",
     width: "0",
     videoId: "",
-    events: {}
+    playerVars: { autoplay: 0 }
   });
 }
 
 /* -----------------------------
-  Spotify Login (PKCE)
+  Spotify Login
 ----------------------------- */
 
 async function login() {
@@ -101,7 +101,7 @@ async function login() {
 
   localStorage.setItem("code_verifier", codeVerifier);
 
-  const args = new URLSearchParams({
+  const query = new URLSearchParams({
     response_type: "code",
     client_id: clientId,
     scope: "playlist-read-private playlist-read-collaborative user-read-private",
@@ -110,7 +110,7 @@ async function login() {
     redirect_uri: redirectUri,
   });
 
-  window.location = "https://accounts.spotify.com/authorize?" + args.toString();
+  window.location = "https://accounts.spotify.com/authorize?" + query.toString();
 }
 
 async function handleRedirect() {
@@ -157,46 +157,30 @@ function extractPlaylistId(url) {
 }
 
 /* -----------------------------
-  YouTube Search (No API Key)
+  Play YouTube Search Result (30 seconds)
 ----------------------------- */
-async function searchYouTube(song, artist) {
+function playYouTubePreview(song, artist) {
   const query = encodeURIComponent(`${song} ${artist} audio`);
-  const html = await fetch(`https://cors.isomorphic-git.org/https://www.youtube.com/results?search_query=${query}`).then(r => r.text());
+  const embedUrl = `https://www.youtube.com/embed?listType=search&list=${query}`;
 
-  // 抓出第一個 videoId
-  const match = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-  if (match) return match[1];
+  ytPlayer.loadVideoByUrl(embedUrl);
 
-  return null;
-}
-
-/* -----------------------------
-  Play YouTube for 30 seconds
------------------------------ */
-function playYouTube30s(videoId) {
-  ytPlayer.loadVideoById(videoId, 0, "tiny");
-
-  // 播放
-  ytPlayer.playVideo();
-
-  // 30 秒後停止
   setTimeout(() => {
-    ytPlayer.pauseVideo();
+    ytPlayer.stopVideo();
   }, 30000);
 }
 
 /* -----------------------------
   Load Playlist
 ----------------------------- */
-
 document.getElementById("loadPlaylistBtn").onclick = async () => {
   if (!accessToken) {
     alert("請先登入 Spotify");
     return;
   }
 
-  const url = document.getElementById("playlistUrl").value;
-  const playlistId = extractPlaylistId(url);
+  const playlistUrl = document.getElementById("playlistUrl").value;
+  const playlistId = extractPlaylistId(playlistUrl);
 
   const res = await fetch(
     `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
@@ -204,7 +188,6 @@ document.getElementById("loadPlaylistBtn").onclick = async () => {
   );
 
   const data = await res.json();
-
   const container = document.getElementById("tracks");
   container.innerHTML = "";
 
@@ -226,21 +209,14 @@ document.getElementById("loadPlaylistBtn").onclick = async () => {
       <button class="addBtn">加入</button>
     `;
 
-    // ★★★ 試聽按鈕（Spotify→YouTube fallback）
-    div.querySelector(".previewBtn").onclick = async () => {
+    // ★★★ 試聽按鈕（Spotify → YouTube fallback）
+    div.querySelector(".previewBtn").onclick = () => {
       if (t.preview_url) {
-        // 播 Spotify 的 preview
         const audio = new Audio(t.preview_url);
         audio.play();
         setTimeout(() => audio.pause(), 30000);
       } else {
-        // YouTube fallback
-        const videoId = await searchYouTube(name, artists);
-        if (!videoId) {
-          alert("找不到 YouTube 試聽來源");
-          return;
-        }
-        playYouTube30s(videoId);
+        playYouTubePreview(name, artists);
       }
     };
 

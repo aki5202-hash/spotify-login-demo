@@ -2,54 +2,66 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <title>Spotify + YouTube fallback 試聽器（30 秒播放）</title>
+  <title>Spotify + YouTube 試聽器（30 秒預覽）</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
-    body { background:#0b1020; color:white; font-family:Arial; padding:20px; }
+    body { background:#0b1020; color:white; font-family:Arial, system-ui; padding:20px; }
     input,button { padding:10px; border-radius:6px; }
-    button { cursor:pointer; font-weight:bold; }
+    button { cursor:pointer; font-weight:bold; border:none; }
     .card { background:#141927; padding:16px; border-radius:12px; margin-bottom:20px; }
-    .track { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid #333; }
-    img { width:60px; height:60px; border-radius:6px; }
+    .track { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid #333; align-items:center; }
+    img { width:60px; height:60px; border-radius:6px; object-fit:cover; background:#222; }
+    .title { font-weight:bold; }
+    .artist { font-size:12px; color:#aaa; }
+    #yt-wrapper { margin-top:10px; }
   </style>
-
-  <!-- YouTube API -->
-  <script src="https://www.youtube.com/iframe_api"></script>
 </head>
 
 <body>
-<h1>Spotify 自動登入 + YouTube fallback 30 秒試聽</h1>
+  <h1>Spotify 自動登入 + YouTube 30 秒試聽</h1>
 
-<div class="card">
-  <button id="loginBtn">登入 Spotify</button>
-  <span id="loginStatus"></span>
-</div>
+  <div class="card">
+    <button id="loginBtn">登入 Spotify</button>
+    <span id="loginStatus" style="margin-left:8px;"></span>
+  </div>
 
-<div class="card">
-  <h2>匯入 Spotify 歌單</h2>
-  <input type="text" id="playlistUrl" placeholder="輸入 Spotify 歌單網址..." style="width:100%;">
-  <br><br>
-  <button id="loadPlaylistBtn">載入歌單</button>
-</div>
+  <div class="card">
+    <h2>匯入 Spotify 歌單</h2>
+    <input type="text" id="playlistUrl" placeholder="輸入 Spotify 歌單網址..." style="width:100%;">
+    <br><br>
+    <button id="loadPlaylistBtn">載入歌單</button>
+  </div>
 
-<div class="card">
-  <h2>歌單曲目</h2>
-  <div id="tracks"></div>
-</div>
+  <div class="card">
+    <h2>歌單曲目</h2>
+    <div id="tracks"></div>
 
-<div class="card">
-  <h2>我的清單</h2>
-  <div id="myList"></div>
-</div>
+    <!-- 顯示用的 YouTube 播放區（小視窗） -->
+    <div id="yt-wrapper">
+      <h3>目前試聽來源（YouTube）</h3>
+      <iframe
+        id="yt-player"
+        width="320"
+        height="180"
+        src=""
+        title="YouTube video player"
+        frameborder="0"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+        referrerpolicy="strict-origin-when-cross-origin"
+        allowfullscreen>
+      </iframe>
+    </div>
+  </div>
 
-<!-- 隱藏 YouTube 播放器 -->
-<div id="yt-player" style="width:0;height:0;overflow:hidden;"></div>
+  <div class="card">
+    <h2>我的清單</h2>
+    <div id="myList"></div>
+  </div>
 
 <script>
 /* -----------------------------
-  PKCE Helper
+   PKCE Helper
 ----------------------------- */
-
 async function sha256(plain) {
   const encoder = new TextEncoder();
   const data = encoder.encode(plain);
@@ -59,7 +71,9 @@ async function sha256(plain) {
 function base64urlencode(a) {
   let str = "";
   const bytes = new Uint8Array(a);
-  bytes.forEach(b => str += String.fromCharCode(b));
+  for (let i = 0; i < bytes.byteLength; i++) {
+    str += String.fromCharCode(bytes[i]);
+  }
   return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
@@ -69,32 +83,18 @@ async function generateCodeChallenge(secret) {
 }
 
 /* -----------------------------
-  Spotify Auth Config
+   Spotify Auth Config
 ----------------------------- */
 
-// ★★★ 已替換你的 Client ID
+// ★★★ 這裡已經是你的 Client ID
 const clientId = "aec8a9bf8f32434490bb473786779b9b";
 const redirectUri = window.location.origin;
 
 let accessToken = null;
-let ytPlayer = null;
 
 /* -----------------------------
-  YouTube Player Setup
+   Spotify Login (PKCE)
 ----------------------------- */
-function onYouTubeIframeAPIReady() {
-  ytPlayer = new YT.Player("yt-player", {
-    height: "0",
-    width: "0",
-    videoId: "",
-    playerVars: { autoplay: 0 }
-  });
-}
-
-/* -----------------------------
-  Spotify Login
------------------------------ */
-
 async function login() {
   const codeVerifier = base64urlencode(crypto.getRandomValues(new Uint8Array(32)));
   const codeChallenge = await generateCodeChallenge(codeVerifier);
@@ -144,7 +144,7 @@ handleRedirect();
 document.getElementById("loginBtn").onclick = login;
 
 /* -----------------------------
-  Playlist ID extractor
+   Playlist ID extractor
 ----------------------------- */
 function extractPlaylistId(url) {
   try {
@@ -157,21 +157,34 @@ function extractPlaylistId(url) {
 }
 
 /* -----------------------------
-  Play YouTube Search Result (30 seconds)
+   YouTube 30 秒試聽（全部強制用 YouTube）
 ----------------------------- */
+const ytFrame = document.getElementById("yt-player");
+let previewTimer = null;
+
 function playYouTubePreview(song, artist) {
-  const query = encodeURIComponent(`${song} ${artist} audio`);
-  const embedUrl = `https://www.youtube.com/embed?listType=search&list=${query}`;
+  if (previewTimer) {
+    clearTimeout(previewTimer);
+    previewTimer = null;
+  }
 
-  ytPlayer.loadVideoByUrl(embedUrl);
+  // 清理歌名／歌手字串，避免太多奇怪符號
+  const cleanSong = (song || "").replace(/\(.*?\)|\[.*?\]/g, "").trim();
+  const cleanArtist = (artist || "").replace(/\(.*?\)|\[.*?\]/g, "").trim();
 
-  setTimeout(() => {
-    ytPlayer.stopVideo();
+  const query = encodeURIComponent(`${cleanSong} ${cleanArtist} audio`);
+  const embedUrl = `https://www.youtube.com/embed?listType=search&list=${query}&autoplay=1`;
+
+  ytFrame.src = embedUrl;
+
+  // 30 秒後清空 src 停止播放
+  previewTimer = setTimeout(() => {
+    ytFrame.src = "";
   }, 30000);
 }
 
 /* -----------------------------
-  Load Playlist
+   Load Playlist
 ----------------------------- */
 document.getElementById("loadPlaylistBtn").onclick = async () => {
   if (!accessToken) {
@@ -179,11 +192,15 @@ document.getElementById("loadPlaylistBtn").onclick = async () => {
     return;
   }
 
-  const playlistUrl = document.getElementById("playlistUrl").value;
+  const playlistUrl = document.getElementById("playlistUrl").value.trim();
   const playlistId = extractPlaylistId(playlistUrl);
+  if (!playlistId) {
+    alert("歌單網址好像怪怪的，確認一下是不是 https://open.spotify.com/playlist/XXXX");
+    return;
+  }
 
   const res = await fetch(
-    `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
+    `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`,
     { headers: { Authorization: "Bearer " + accessToken } }
   );
 
@@ -191,47 +208,62 @@ document.getElementById("loadPlaylistBtn").onclick = async () => {
   const container = document.getElementById("tracks");
   container.innerHTML = "";
 
+  if (!data.items || data.items.length === 0) {
+    container.textContent = "這個歌單沒有曲目。";
+    return;
+  }
+
   data.items.forEach(item => {
     const t = item.track;
-    const name = t.name;
-    const artists = t.artists.map(a => a.name).join(", ");
+    if (!t) return;
+
+    const name = t.name || "未命名曲目";
+    const artists = t.artists && t.artists.length
+      ? t.artists.map(a => a.name).join(", ")
+      : "未知歌手";
 
     const div = document.createElement("div");
     div.className = "track";
 
-    div.innerHTML = `
-      <img src="${t.album.images[2]?.url}">
-      <div style="flex:1">
-        <div><b>${name}</b></div>
-        <div style="font-size:12px;color:#aaa">${artists}</div>
-      </div>
-      <button class="previewBtn">試聽</button>
-      <button class="addBtn">加入</button>
+    const img = document.createElement("img");
+    img.src = (t.album && t.album.images && t.album.images[2] && t.album.images[2].url) ||
+              (t.album && t.album.images && t.album.images[0] && t.album.images[0].url) ||
+              "";
+    img.alt = name;
+
+    const info = document.createElement("div");
+    info.style.flex = "1";
+    info.innerHTML = `
+      <div class="title">${name}</div>
+      <div class="artist">${artists}</div>
     `;
 
-    // ★★★ 試聽按鈕（Spotify → YouTube fallback）
-    div.querySelector(".previewBtn").onclick = () => {
-      if (t.preview_url) {
-        const audio = new Audio(t.preview_url);
-        audio.play();
-        setTimeout(() => audio.pause(), 30000);
-      } else {
-        playYouTubePreview(name, artists);
-      }
+    const previewBtn = document.createElement("button");
+    previewBtn.textContent = "試聽（YouTube）";
+
+    previewBtn.onclick = () => {
+      playYouTubePreview(name, artists);
     };
 
-    // 加入清單
-    div.querySelector(".addBtn").onclick = () => {
+    const addBtn = document.createElement("button");
+    addBtn.textContent = "加入";
+    addBtn.style.marginLeft = "8px";
+
+    addBtn.onclick = () => {
       const my = document.getElementById("myList");
-      const item = document.createElement("div");
-      item.textContent = `${name} - ${artists}`;
-      my.appendChild(item);
+      const itemEl = document.createElement("div");
+      itemEl.textContent = `${name} - ${artists}`;
+      my.appendChild(itemEl);
     };
+
+    div.appendChild(img);
+    div.appendChild(info);
+    div.appendChild(previewBtn);
+    div.appendChild(addBtn);
 
     container.appendChild(div);
   });
 };
-
 </script>
 
 </body>
